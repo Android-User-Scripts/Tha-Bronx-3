@@ -1,0 +1,963 @@
+--=================================================--
+--       ALTERNATE REALITY HUB (BRONX) - FULL      --
+--      Universal Executor Compatibility Edition   --
+--           (Swift / Bunni / Pottinassuruim / ...) 
+--=================================================--
+-- Paste into your executor of choice. Designed to
+-- be compatible with modern executors by trying many
+-- exploit API names and safe fallbacks.
+
+task.spawn(function()
+  ----------------------------
+  -- Safe loader for UI lib --
+  ----------------------------
+  local ok, Library = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/KINGHUB01/Gui/main/Gui%20Lib%20%5BLibrary%5D"))()
+  end)
+  if not ok or not Library then
+    warn("[AltReality] Failed to load UI library; aborting.")
+    return
+  end
+
+  -- optional theme/save managers (best-effort)
+  local ThemeManager, SaveManager
+  pcall(function() ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/KINGHUB01/Gui/main/Gui%20Lib%20%5BThemeManager%5D"))() end)
+  pcall(function() SaveManager  = loadstring(game:HttpGet("https://raw.githubusercontent.com/KINGHUB01/Gui/main/Gui%20Lib%20%5BSaveManager%5D"))() end)
+
+  -------------------------
+  -- Roblox services/vars
+  -------------------------
+  local RunService = game:GetService("RunService")
+  local Players = game:GetService("Players")
+  local LocalPlayer = Players.LocalPlayer
+  local UserInputService = game:GetService("UserInputService")
+  local Workspace = game:GetService("Workspace")
+  local ReplicatedStorage = game:GetService("ReplicatedStorage")
+  local ProximityPromptService = game:GetService("ProximityPromptService")
+  local StarterGui = game:GetService("StarterGui")
+  local CoreGui = game:GetService("CoreGui")
+  local Camera = Workspace.CurrentCamera
+  local task = task
+  local pcall = pcall
+  local warn = warn
+  local print = print
+
+  ------------------------------------------------
+  -- Executor compatibility: detect many helpers --
+  ------------------------------------------------
+  -- We'll try to find common exploit functions under many names.
+  local EXPLOIT = {}
+
+  -- Generic function fetch helper
+  local function safe_getglobal(name)
+    local ok, val = pcall(function() return _G[name] end)
+    if ok and val ~= nil then return val end
+    if _ENV and _ENV[name] ~= nil then return _ENV[name] end
+    return nil
+  end
+
+  -- Try many possible function names for firing proximity prompts / clickdetectors
+  EXPLOIT.fireproximityprompt = safe_getglobal("fireproximityprompt")
+    or safe_getglobal("fireproximityprompt2")
+    or safe_getglobal("fire_proximity_prompt")
+    or safe_getglobal("firePrompt")
+    or safe_getglobal("fireprompt")
+
+  EXPLOIT.fireclickdetector = safe_getglobal("fireclickdetector")
+    or safe_getglobal("fireClickDetector")
+    or safe_getglobal("fireclick")
+    or safe_getglobal("fireClick")
+
+  EXPLOIT.firetouchinterest = safe_getglobal("firetouchinterest")
+    or safe_getglobal("fireTouchInterest")
+    or safe_getglobal("firetouch")
+
+  -- getgenv wrapper (some executors support getgenv)
+  local _getgenv = safe_getglobal("getgenv") or function() return _G end
+
+  -- virtual user fallback (roblox)
+  local VirtualUser = nil
+  pcall(function() VirtualUser = game:GetService("VirtualUser") end)
+
+  ------------------------------------------------------
+  -- Universal wrappers: these call exploit functions
+  -- if present, otherwise try safe Roblox fallbacks.
+  ------------------------------------------------------
+  local function universalFireProximityPrompt(prompt, hold)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+
+    -- If exploit provides a direct function, use it
+    if EXPLOIT.fireproximityprompt then
+      pcall(function() EXPLOIT.fireproximityprompt(prompt, hold) end)
+      return true
+    end
+
+    -- Try ClickDetector on parent
+    pcall(function()
+      local parent = prompt.Parent
+      local cd = parent:FindFirstChildWhichIsA("ClickDetector")
+      if cd then
+        if EXPLOIT.fireclickdetector then
+          pcall(function() EXPLOIT.fireclickdetector(cd) end)
+        else
+          pcall(function() cd:FireClick() end)
+        end
+      else
+        -- Fallback: use VirtualUser to click (best-effort)
+        if VirtualUser then
+          pcall(function() VirtualUser:Button1Down(Vector2.new(0,0)); task.wait(0.05); VirtualUser:Button1Up(Vector2.new(0,0)) end)
+        end
+      end
+    end)
+
+    -- Last fallback: call :InputHold / :Trigger if available
+    pcall(function()
+      if prompt.InputHoldEnabled and typeof(prompt.HoldDuration) == "number" then
+        -- Some custom prompts expose direct methods
+        if prompt.Trigger then pcall(function() prompt:Trigger() end) end
+      end
+    end)
+
+    return true
+  end
+
+  local function universalFireClickDetector(cd)
+    if not cd or not cd:IsA("ClickDetector") then return false end
+    if EXPLOIT.fireclickdetector then
+      pcall(function() EXPLOIT.fireclickdetector(cd) end)
+      return true
+    end
+    pcall(function() cd:FireClick() end)
+    return true
+  end
+
+  local function universalFireTouch(part, other)
+    if not part or not other then return false end
+    if EXPLOIT.firetouchinterest then
+      pcall(function() EXPLOIT.firetouchinterest(part, other, 0) end)
+      pcall(function() EXPLOIT.firetouchinterest(part, other, 1) end)
+      return true
+    end
+    -- fallback: try touch simulation by setting CFrame briefly (best-effort, may be unreliable)
+    pcall(function()
+      local orig = part.CFrame
+      part.CFrame = other.CFrame
+      task.wait(0.03)
+      part.CFrame = orig
+    end)
+    return true
+  end
+
+  ----------------------------------
+  -- Basic helper utilities
+  ----------------------------------
+  local function safeFind(obj, name)
+    if not obj then return nil end
+    local ok, res = pcall(function() return obj:FindFirstChild(name, true) end)
+    if ok then return res end
+    return nil
+  end
+
+  local function hasHumanoidRoot(player)
+    return player and player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+  end
+
+  local function DistanceBetweenPlayers(p1, p2)
+    if not hasHumanoidRoot(p1) or not hasHumanoidRoot(p2) then return math.huge end
+    return (p1.Character.HumanoidRootPart.Position - p2.Character.HumanoidRootPart.Position).Magnitude
+  end
+
+  -- Robust teleport function: sets HumanoidRootPart.CFrame, returns true on success
+  local function Teleport(cframe)
+    if not (LocalPlayer and LocalPlayer.Character) then return false end
+    local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    pcall(function() hrp.CFrame = cframe end)
+    return true
+  end
+
+  -------------------------
+  -- Configuration table
+  -------------------------
+  local Config = {
+    TheBronx = {
+      PlayerModifications = {
+        InfiniteStamina       = false,
+        InfiniteHunger        = false,
+        InfiniteSleep         = false,
+        DisableCameraBobbing  = false,
+        NoFallDamage          = false,
+        DisableBloodEffects   = false,
+        NoJumpCooldown        = false,
+        DisableCameras        = false,
+        NoRentPay             = false,
+        InstantRevive         = false,
+        InstantInteract       = false,
+        BypassLockedCars      = false,
+        RespawnWhereYouDied   = false,
+      },
+      PlayerUtilities = {
+        AutoPickupBags   = false,
+        AutoPickupCash   = false,
+        AutoKill         = false,
+        AutoRagdoll      = false,
+        BringingPlayer   = false,
+        BugPlayer        = false,
+        SelectedPlayer   = "",
+      },
+      KillAura       = false,
+      KillAuraRange  = 20,
+      ClickTeleport  = false,
+      ClickTeleportActive = true,
+      VehicleModifications = {
+        SpeedEnabled  = false,
+        SpeedValue    = 1,
+        BreakEnabled  = false,
+        BreakValue    = 1,
+        InstantStop   = false,
+        InstantStopBind = Enum.KeyCode.Q,
+      },
+      Farms = {
+        FarmConstructionJob = false,
+        FarmBank            = false,
+        FarmHouses          = false,
+        FarmStudio          = false,
+        FarmTrash           = false,
+        CollectDroppedMoney = false,
+        CollectDroppedLoot  = false,
+        AutoSellTrash       = false,
+        AFKCheck            = false,
+      },
+      MoneyAmount = 0,
+      AutoDrop = false,
+    },
+    MiscSettings = {
+      ModifyJump = { Infinity = false },
+      Fly        = { Enabled = false, Type = "Classic", Speed = 50 },
+    },
+    ESP = {
+      Enabled     = false,
+      MaxDistance = 200,
+      FontSize    = 14,
+      Font        = Enum.Font.Code,
+    },
+    Silent = {
+      Enabled     = false,
+      HitChance   = 100,
+      WallBang    = false,
+      TargetPart  = {"Head"},
+      Targetting  = false,
+    },
+    Guns = {},
+  }
+
+  -------------------------
+  -- Build UI (Linoria-like)
+  -------------------------
+  local Window = Library:CreateWindow({
+    Title      = "Alternate Reality (Bronx) - Universal",
+    Center     = true,
+    AutoShow   = true,
+    TabPadding = 6,
+  })
+
+  local Tabs = {
+    Main     = Window:AddTab("Main"),
+    Player   = Window:AddTab("Player"),
+    Autofarm = Window:AddTab("Autofarm"),
+    Combat   = Window:AddTab("Combat"),
+    Visual   = Window:AddTab("Visual"),
+    ["UI Settings"] = Window:AddTab("UI Settings"),
+  }
+
+  -- MAIN tab
+  do
+    local grp = Tabs.Main:AddLeftGroupbox("Utilities")
+    grp:AddToggle("ClickTeleport", {
+      Text    = "Click Teleport",
+      Default = Config.TheBronx.ClickTeleport,
+      Callback= function(v) Config.TheBronx.ClickTeleport = v end,
+    })
+    grp:AddToggle("InfiniteJump", {
+      Text    = "Infinite Jump",
+      Default = Config.MiscSettings.ModifyJump.Infinity,
+      Callback= function(v) Config.MiscSettings.ModifyJump.Infinity = v end,
+    })
+    grp:AddLabel("Teleport Key"):AddKeyPicker("TeleportBind", {
+      Default = "E",
+      Text    = "Teleport Keybind",
+      Callback= function(v) end,
+    })
+  end
+
+  -- PLAYER tab (abbreviated set)
+  do
+    local grp = Tabs.Player:AddLeftGroupbox("Player Modifications")
+    local pm = Config.TheBronx.PlayerModifications
+    grp:AddToggle("InfiniteStamina", { Text = "Infinite Stamina", Default = pm.InfiniteStamina, Callback = function(v) pm.InfiniteStamina = v end })
+    grp:AddToggle("NoFallDamage",    { Text = "No Fall Damage", Default = pm.NoFallDamage, Callback = function(v) pm.NoFallDamage = v end })
+    grp:AddToggle("InstantInteract", { Text = "Instant Interact", Default = pm.InstantInteract, Callback = function(v) pm.InstantInteract = v end })
+    grp:AddToggle("InstantRevive",   { Text = "Instant Revive", Default = pm.InstantRevive, Callback = function(v) pm.InstantRevive = v end })
+    grp:AddToggle("RespawnWhereDied",{ Text = "Respawn Where Died", Default = pm.RespawnWhereYouDied, Callback = function(v) pm.RespawnWhereYouDied = v end })
+  end
+
+  -- AUTOFARM tab
+  do
+    local grp = Tabs.Autofarm:AddLeftGroupbox("Auto Farming")
+    local fm = Config.TheBronx.Farms
+    local pu = Config.TheBronx.PlayerUtilities
+    grp:AddToggle("AutoPickupBags", { Text = "Auto Pickup Bags", Default = pu.AutoPickupBags, Callback= function(v) pu.AutoPickupBags = v end })
+    grp:AddToggle("AutoPickupCash", { Text = "Auto Pickup Cash", Default = pu.AutoPickupCash, Callback= function(v) pu.AutoPickupCash = v end })
+    grp:AddToggle("FarmConstruction", { Text = "Farm Construction Job", Default = fm.FarmConstructionJob, Callback= function(v) fm.FarmConstructionJob = v end })
+    grp:AddToggle("FarmBank", { Text = "Farm Bank", Default = fm.FarmBank, Callback= function(v) fm.FarmBank = v end })
+    grp:AddToggle("FarmHouses", { Text = "Farm Houses", Default = fm.FarmHouses, Callback= function(v) fm.FarmHouses = v end })
+    grp:AddToggle("FarmStudio", { Text = "Farm Studio", Default = fm.FarmStudio, Callback= function(v) fm.FarmStudio = v end })
+    grp:AddToggle("FarmTrash", { Text = "Farm Trash", Default = fm.FarmTrash, Callback= function(v) fm.FarmTrash = v end })
+    grp:AddToggle("CollectDroppedMoney", { Text = "Collect Dropped Money", Default = fm.CollectDroppedMoney, Callback= function(v) fm.CollectDroppedMoney = v end })
+    grp:AddToggle("CollectDroppedLoot", { Text = "Collect Dropped Loot", Default = fm.CollectDroppedLoot, Callback= function(v) fm.CollectDroppedLoot = v end })
+    grp:AddToggle("AutoSellTrash", { Text = "Auto Sell Trash", Default = fm.AutoSellTrash, Callback= function(v) fm.AutoSellTrash = v end })
+  end
+
+  -- COMBAT tab (short)
+  do
+    local grp = Tabs.Combat:AddLeftGroupbox("Combat Tools")
+    local tbx = Config.TheBronx
+    local slt = Config.Silent
+    grp:AddToggle("KillAura", { Text = "Enable Kill Aura", Default = tbx.KillAura, Callback= function(v) tbx.KillAura = v end })
+    grp:AddSlider("KillAuraRange", { Text = "Kill Aura Range", Default = tbx.KillAuraRange, Min = 1, Max = 100, Rounding= 1, Callback= function(v) tbx.KillAuraRange = v end })
+    grp:AddToggle("SilentAim", { Text = "Silent Aim", Default = slt.Enabled, Callback= function(v) slt.Enabled = v end })
+  end
+
+  -- VISUAL tab (short)
+  do
+    local grp = Tabs.Visual:AddLeftGroupbox("Visual Settings")
+    grp:AddToggle("ESPToggle", { Text = "Enable ESP", Default = Config.ESP.Enabled, Callback= function(v) Config.ESP.Enabled = v end })
+    grp:AddSlider("MaxESPDistance", { Text = "ESP Max Distance", Default = Config.ESP.MaxDistance, Min = 50, Max = 1000, Rounding= 0, Callback= function(v) Config.ESP.MaxDistance = v end })
+  end
+
+  -- UI settings
+  do
+    local grp = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+    grp:AddButton("Unload", function() Library:Unload() end)
+    grp:AddLabel("Menu Keybind"):AddKeyPicker("MenuKeybind", { Default = "End", NoUI = true, Text = "Menu Toggle" })
+    pcall(function() Library.ToggleKeybind = Options and Options.MenuKeybind or {Value = Enum.KeyCode.End} end)
+  end
+
+  if ThemeManager and SaveManager then
+    pcall(function() ThemeManager:SetLibrary(Library) end)
+    pcall(function() SaveManager:SetLibrary(Library) end)
+    pcall(function() SaveManager:IgnoreThemeSettings() end)
+    pcall(function() SaveManager:SetIgnoreIndexes({ "MenuKeybind" }) end)
+    pcall(function() ThemeManager:SetFolder("AltRealityHub") end)
+    pcall(function() SaveManager:SetFolder("AltRealityHub/TheBronx") end)
+    pcall(function() SaveManager:BuildConfigSection(Tabs["UI Settings"]) end)
+    pcall(function() ThemeManager:ApplyToTab(Tabs["UI Settings"]) end)
+    pcall(function() SaveManager:LoadAutoloadConfig() end)
+  end
+
+  -----------------------------------
+  -- Core game logic: helpers/tasks
+  -----------------------------------
+  local function DistanceCheck(player, range)
+    if not (player and player.Character and player.Character:FindFirstChild("HumanoidRootPart")) then return false end
+    if not (LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) then return false end
+    return (player.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude <= range
+  end
+
+  -- Kill gun function (best-effort wrapper for original game's remotes)
+  local function kill_gun(targetName, hitPart, damage)
+    if not hitPart then hitPart = "Head" end
+    if not damage then damage = math.huge end
+    if not (LocalPlayer and LocalPlayer.Character) then return end
+    local tool = LocalPlayer.Character:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    local target = Players:FindFirstChild(tostring(targetName))
+    if not (target and target.Character) then return end
+    local hitpos = (target.Character:FindFirstChild(hitPart) and target.Character[hitPart].Position) or (target.Character:FindFirstChild("Head") and target.Character.Head.Position)
+    pcall(function()
+      if tool:FindFirstChild("Setting") and pcall and require then
+        pcall(function() require(tool.Setting).Range = 10000 end)
+      end
+      if ReplicatedStorage:FindFirstChild("VisualizeMuzzle") and tool:FindFirstChild("Handle") and tool:FindFirstChild("GunScript_Local") then
+        pcall(function() ReplicatedStorage.VisualizeMuzzle:FireServer(tool.Handle, true, {false,7,Color3.new(1,1.1098039,0),15,true,0.02}, tool.GunScript_Local.MuzzleEffect) end)
+      end
+      if ReplicatedStorage:FindFirstChild("VisualizeBullet") then
+        pcall(function() ReplicatedStorage.VisualizeBullet:FireServer(tool, tool.Handle, Vector3.new(-0.17,0.088,0.98), tool.Handle:FindFirstChild("GunFirePoint") or tool.Handle, {}, {}) end)
+      end
+      if ReplicatedStorage:FindFirstChild("InflictTarget") then
+        pcall(function() ReplicatedStorage.InflictTarget:FireServer(tool, LocalPlayer, target.Character:FindFirstChild("Humanoid"), target.Character:FindFirstChild(hitPart) or target.Character:FindFirstChild("Head"), damage, {}, {}, target.Character:FindFirstChild(hitPart), {}, hitpos, Vector3.new(0,0,0), true) end)
+      end
+    end)
+  end
+  -- expose (some users/scripts expect getgenv().kill_gun)
+  pcall(function() _getgenv().kill_gun = kill_gun end)
+
+  -------------------------
+  -- KillAura loop
+  -------------------------
+  task.spawn(function()
+    while task.wait(0.8) do
+      if not Config.TheBronx.KillAura then continue end
+      if not (LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")) then continue end
+      for _,plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+          local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
+          if humanoid and humanoid.Health > 0 and not plr.Character:FindFirstChildOfClass("ForceField") then
+            if DistanceCheck(plr, Config.TheBronx.KillAuraRange) then
+              pcall(function() kill_gun(plr.Name, "Head", math.huge) end)
+            end
+          end
+        end
+      end
+    end
+  end)
+
+  -------------------------
+  -- Autofarm helpers
+  -------------------------
+  -- Collect dropped money (tries parts under Workspace.Dollas)
+  local function CollectDroppedMoneyTask()
+    if not Config.TheBronx.Farms.CollectDroppedMoney then return end
+    if not (LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) then return end
+    local old = LocalPlayer.Character.HumanoidRootPart.CFrame
+    if Workspace:FindFirstChild("Dollas") then
+      for _,obj in ipairs(Workspace.Dollas:GetChildren()) do
+        -- some servers use parts, others use models - handle both
+        if obj:IsA("BasePart") then
+          pcall(function() Teleport(obj.CFrame * CFrame.new(0,3.5,0)) end)
+          task.wait(0.35)
+          local pp = obj:FindFirstChildWhichIsA("ProximityPrompt", true) or obj:FindFirstChild("ProximityPrompt")
+          if pp then universalFireProximityPrompt(pp) end
+          task.wait(0.15)
+        elseif obj:IsA("Model") then
+          local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+          if primary then
+            pcall(function() Teleport(primary.CFrame * CFrame.new(0,3.5,0)) end)
+            task.wait(0.35)
+            local pp = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if pp then universalFireProximityPrompt(pp) end
+            task.wait(0.15)
+          end
+        end
+      end
+    end
+    pcall(function() Teleport(old) end)
+  end
+
+  -- Collect dropped loot bags
+  local function CollectLootBagsTask()
+    if not Config.TheBronx.Farms.CollectDroppedLoot then return end
+    if not (LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) then return end
+    local old = LocalPlayer.Character.HumanoidRootPart.CFrame
+    if Workspace:FindFirstChild("Storage") then
+      for _,container in ipairs(Workspace.Storage:GetChildren()) do
+        -- container may be a folder of bags or direct bags
+        for _,bag in ipairs((container:GetChildren())) do
+          -- bag can be MeshPart, Part, or Model
+          if bag:IsA("MeshPart") or bag:IsA("BasePart") then
+            if bag:FindFirstChild("PlayerName") and bag.PlayerName.Value == LocalPlayer.Name then continue end
+            pcall(function() Teleport(CFrame.new(bag.Position + Vector3.new(0,3.5,0))) end)
+            task.wait(0.35)
+            local sp = bag:FindFirstChild("stealprompt") or bag:FindFirstChildWhichIsA("ProximityPrompt", true)
+            if sp then universalFireProximityPrompt(sp) end
+            task.wait(0.15)
+          elseif bag:IsA("Model") then
+            local primary = bag.PrimaryPart or bag:FindFirstChildWhichIsA("BasePart")
+            if primary then
+              if bag:FindFirstChild("PlayerName") and bag.PlayerName.Value == LocalPlayer.Name then continue end
+              pcall(function() Teleport(primary.CFrame * CFrame.new(0,3.5,0)) end)
+              task.wait(0.35)
+              local sp = bag:FindFirstChild("stealprompt") or bag:FindFirstChildWhichIsA("ProximityPrompt", true)
+              if sp then universalFireProximityPrompt(sp) end
+              task.wait(0.15)
+            end
+          end
+        end
+      end
+    end
+    pcall(function() Teleport(old) end)
+  end
+
+  -- react to new loot/money
+  if Workspace:FindFirstChild("Storage") then Workspace.Storage.ChildAdded:Connect(function() task.spawn(CollectLootBagsTask) end) end
+  if Workspace:FindFirstChild("Dollas") then Workspace.Dollas.ChildAdded:Connect(function() task.spawn(CollectDroppedMoneyTask) end) end
+
+  ----------------------------------------
+  -- Autofarm main loop (construction, bank, houses, studio, trash)
+  ----------------------------------------
+  task.spawn(function()
+    while task.wait(0.6) do
+      -- Construction
+      if Config.TheBronx.Farms.FarmConstructionJob then
+        if LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") and LocalPlayer.Character.Humanoid.Health > 0 then
+          if not LocalPlayer:GetAttribute("WorkingJob") then
+            pcall(function() Teleport(CFrame.new(-1729, 371, -1171)) end)
+            task.wait(0.45)
+            pcall(function() 
+              if Workspace.ConstructionStuff and Workspace.ConstructionStuff:FindFirstChild("Start Job") and Workspace.ConstructionStuff["Start Job"].Prompt then
+                universalFireProximityPrompt(Workspace.ConstructionStuff["Start Job"].Prompt)
+              end
+            end)
+            repeat task.wait() until LocalPlayer:GetAttribute("WorkingJob")
+          end
+
+          -- Grab wood
+          if not (LocalPlayer.Backpack:FindFirstChild("PlyWood") or LocalPlayer.Character:FindFirstChild("PlyWood")) then
+            pcall(function() Teleport(CFrame.new(-1728, 371, -1178)) end)
+            repeat task.wait() pcall(function() if Workspace.ConstructionStuff and Workspace.ConstructionStuff:FindFirstChild("Grab Wood") and Workspace.ConstructionStuff["Grab Wood"].Prompt then universalFireProximityPrompt(Workspace.ConstructionStuff["Grab Wood"].Prompt) end end) until LocalPlayer.Backpack:FindFirstChild("PlyWood") or LocalPlayer.Character:FindFirstChild("PlyWood")
+          end
+
+          -- Place wood
+          if LocalPlayer.Backpack:FindFirstChild("PlyWood") then
+            pcall(function() LocalPlayer.Character.Humanoid:EquipTool(LocalPlayer.Backpack:FindFirstChild("PlyWood")) end)
+            -- find a Wall with Prompt
+            local place = nil
+            for _,v in ipairs(Workspace:GetChildren()) do
+              if v.Name and tostring(v.Name):match("Wall") and v:IsA("BasePart") and v:FindFirstChild("Prompt") and v.Prompt.Enabled then
+                place = v; break
+              end
+            end
+            if place then
+              pcall(function() Teleport(place.CFrame) end)
+              repeat task.wait() pcall(function() if place and place:FindFirstChild("Prompt") then universalFireProximityPrompt(place.Prompt) end end) until not LocalPlayer.Character:FindFirstChild("PlyWood") or not (place and place.Prompt and place.Prompt.Enabled)
+            end
+          end
+        end
+      end
+
+      -- Bank
+      if Config.TheBronx.Farms.FarmBank then
+        local robPrompt = Workspace:FindFirstChild("vault") and Workspace.vault:FindFirstChild("door") and Workspace.vault.door:FindFirstChild("robPrompt")
+        if robPrompt and robPrompt:IsA("Model") or (robPrompt and robPrompt.ProximityPrompt) then
+          if not LocalPlayer.Character:FindFirstChild("DuffelBag") then
+            pcall(function() Teleport(CFrame.new(-397, 340, -551)); task.wait(0.4); if Workspace.dufflebagequip then universalFireProximityPrompt(Workspace.dufflebagequip:FindFirstChildWhichIsA("ProximityPrompt")) end end)
+          end
+          if not (LocalPlayer.Backpack:FindFirstChild("C4") or LocalPlayer.Character:FindFirstChild("C4")) then
+            pcall(function() Teleport(CFrame.new(-393,340,-564)); task.wait(0.4); if Workspace.GUNS and Workspace.GUNS:FindFirstChild("C4") and Workspace.GUNS.C4:FindFirstChild("Handle") and Workspace.GUNS.C4.Handle:FindFirstChild("BuyPrompt") then universalFireProximityPrompt(Workspace.GUNS.C4.Handle.BuyPrompt) end end)
+            repeat task.wait() until (LocalPlayer.Backpack:FindFirstChild("C4") or LocalPlayer.Character:FindFirstChild("C4"))
+          end
+          if LocalPlayer.Backpack:FindFirstChild("C4") then
+            pcall(function() LocalPlayer.Character.Humanoid:EquipTool(LocalPlayer.Backpack:FindFirstChild("C4")) end)
+            pcall(function() Teleport(CFrame.new(-196,374,-1216)); task.wait(0.4); if Workspace.vault and Workspace.vault.door and Workspace.vault.door.robPrompt and Workspace.vault.door.robPrompt.ProximityPrompt then universalFireProximityPrompt(Workspace.vault.door.robPrompt.ProximityPrompt) end end)
+            task.wait(2)
+            local Number = ""
+            pcall(function() Number = LocalPlayer.Character.DuffelBag.display.SurfaceGui.Frame.TextLabel.Text end)
+            Number = tostring(Number):gsub("0/","")
+            local num = tonumber(Number) or 0
+            for i=1,num do
+              local Cash = nil
+              for _,v in ipairs(Workspace:GetChildren()) do
+                if v.Name == "Cash" and v:IsA("Model") and v:FindFirstChild("Model") then Cash = v; break end
+              end
+              if not Cash then break end
+              pcall(function() Teleport((Cash.Model and Cash.Model.Cash and Cash.Model.Cash.CFrame) and (Cash.Model.Cash.CFrame * CFrame.new(0,3,0)) or (Cash.PrimaryPart and Cash.PrimaryPart.CFrame * CFrame.new(0,3,0))) end)
+              task.wait(0.4)
+              pcall(function() local p = Cash.Model and Cash.Model:FindFirstChildWhichIsA("ProximityPrompt", true) if p then universalFireProximityPrompt(p) end end)
+              task.wait(0.25)
+            end
+            pcall(function() if Workspace:FindFirstChild("sellgold") and Workspace.sellgold:IsA("BasePart") and Workspace.sellgold:FindFirstChild("ClickDetector") then universalFireClickDetector(Workspace.sellgold.ClickDetector) end end)
+          end
+        else
+          if Config.TheBronx.Farms.AFKCheck then pcall(function() Teleport(CFrame.new(0,0,0)) end) end
+        end
+      end
+
+      -- Houses (house robbing)
+      if Config.TheBronx.Farms.FarmHouses then
+        local hardDoor = Workspace:FindFirstChild("HouseRobb") and Workspace.HouseRobb:FindFirstChild("HardDoor")
+        if hardDoor and hardDoor:FindFirstChild("Door") then
+          local prompt = hardDoor.Door:FindFirstChildWhichIsA("ProximityPrompt", true)
+          if prompt and prompt.Enabled then
+            pcall(function() Teleport(prompt.Parent.CFrame); task.wait(0.4); universalFireProximityPrompt(prompt) end)
+            repeat task.wait() until hardDoor:FindFirstChild("TakeMoney") and hardDoor.TakeMoney:FindFirstChildWhichIsA("ProximityPrompt", true) and hardDoor.TakeMoney:FindFirstChildWhichIsA("ProximityPrompt", true).Enabled
+            for _,val in ipairs(hardDoor.TakeMoney:GetChildren()) do
+              if val:IsA("BasePart") and val:FindFirstChildWhichIsA("ProximityPrompt", true) then
+                pcall(function() Teleport(val.CFrame * CFrame.new(0,0,0)); universalFireProximityPrompt(val:FindFirstChildWhichIsA("ProximityPrompt", true)); task.wait(0.025) end)
+              end
+            end
+          else
+            if Config.TheBronx.Farms.AFKCheck then pcall(function() Teleport(CFrame.new(0,0,0)) end) end
+          end
+        end
+      end
+
+      -- Studio money collection
+      if Config.TheBronx.Farms.FarmStudio then
+        local function tryPrompt(p) if p and p.Enabled then pcall(function() Teleport(p.Parent.CFrame); task.wait(0.4); universalFireProximityPrompt(p); task.wait(0.1) end) end end
+        local Prompt1 = Workspace:FindFirstChild("StudioPay") and Workspace.StudioPay.Money:FindFirstChild("StudioPay1") and Workspace.StudioPay.Money.StudioPay1:FindFirstChildWhichIsA("ProximityPrompt", true)
+        local Prompt2 = Workspace:FindFirstChild("StudioPay") and Workspace.StudioPay.Money:FindFirstChild("StudioPay2") and Workspace.StudioPay.Money.StudioPay2:FindFirstChildWhichIsA("ProximityPrompt", true)
+        local Prompt3 = Workspace:FindFirstChild("StudioPay") and Workspace.StudioPay.Money:FindFirstChild("StudioPay3") and Workspace.StudioPay.Money.StudioPay3:FindFirstChildWhichIsA("ProximityPrompt", true)
+        tryPrompt(Prompt1); tryPrompt(Prompt2); tryPrompt(Prompt3)
+        if Config.TheBronx.Farms.AFKCheck then task.wait(0.4); pcall(function() Teleport(CFrame.new(0,0,0)) end); task.wait(0.4) end
+      end
+
+      -- Trash pickup
+      if Config.TheBronx.Farms.FarmTrash then
+        for _,v in ipairs(Workspace:GetChildren()) do
+          if v.Name == "DumpsterPromt" and v:FindFirstChild("ProximityPrompt") and v.ProximityPrompt.Enabled then
+            local hold = v.ProximityPrompt.HoldDuration
+            v.ProximityPrompt.HoldDuration = 0
+            pcall(function() Teleport(CFrame.new(v.Position.X, v.Position.Y, v.Position.Z)); task.wait(0.4) end)
+            pcall(function()
+              universalFireProximityPrompt(v.ProximityPrompt)
+            end)
+            task.wait(0.5)
+            v.ProximityPrompt.HoldDuration = hold
+          end
+        end
+
+        if Config.TheBronx.Farms.AutoSellTrash then
+          for _,tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+              pcall(function() local pawn = ReplicatedStorage:FindFirstChild("PawnRemote"); if pawn then pawn:FireServer(tool.Name) end end)
+              task.wait()
+            end
+          end
+          task.wait(1)
+        end
+      end
+
+    end -- while
+  end)
+
+  ---------------------------------------
+  -- PLAYER UTILITIES (bring / bug / autokill)
+  ---------------------------------------
+  task.spawn(function()
+    while task.wait(0.6) do
+      -- Bug player (teleport vehicle to player)
+      if Config.TheBronx.PlayerUtilities.BugPlayer and Config.TheBronx.PlayerUtilities.SelectedPlayer ~= "" then
+        local sel = Players:FindFirstChild(Config.TheBronx.PlayerUtilities.SelectedPlayer)
+        if sel and sel.Character and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+          local function GetVehicle()
+            if Workspace:FindFirstChild("CivCars") then
+              for _,v in ipairs(Workspace.CivCars:GetChildren()) do
+                if v:FindFirstChild("DriveSeat") and not v.DriveSeat.Occupant then return v end
+              end
+            end
+          end
+          local car = GetVehicle()
+          if car and car:FindFirstChild("DriveSeat") and not car.DriveSeat.Occupant then
+            if not car:GetAttribute("Usable") or car:GetAttribute("Usable") == false then
+              pcall(function() car.DriveSeat:Sit(LocalPlayer.Character.Humanoid); car:SetAttribute("Usable", true); task.wait(1); LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping); LocalPlayer.Character.Humanoid.Jump = true; LocalPlayer.Character.Humanoid.Sit = false end)
+            end
+            if not car.PrimaryPart then car.PrimaryPart = car:FindFirstChild("Body") and car.Body:FindFirstChild("#Weight") end
+            if car.PrimaryPart and sel.Character and sel.Character:FindFirstChild("HumanoidRootPart") then
+              pcall(function() car:SetPrimaryPartCFrame(sel.Character.HumanoidRootPart.CFrame) end)
+            end
+          end
+        end
+      end
+
+      -- Bring player
+      if Config.TheBronx.PlayerUtilities.BringingPlayer and Config.TheBronx.PlayerUtilities.SelectedPlayer ~= "" then
+        local sel = Players:FindFirstChild(Config.TheBronx.PlayerUtilities.SelectedPlayer)
+        if sel and sel.Character and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and sel.Character:FindFirstChild("HumanoidRootPart") then
+          pcall(function() sel.Character.HumanoidRootPart.CFrame = LocalPlayer.Character.HumanoidRootPart.CFrame + Vector3.new(2,0,0) end)
+        end
+      end
+
+      -- AutoKill & AutoRagdoll (best-effort)
+      if (Config.TheBronx.PlayerUtilities.AutoKill or Config.TheBronx.PlayerUtilities.AutoRagdoll) and Config.TheBronx.PlayerUtilities.SelectedPlayer ~= "" then
+        local sel = Players:FindFirstChild(Config.TheBronx.PlayerUtilities.SelectedPlayer)
+        if sel and sel.Character and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool") and LocalPlayer.Character:FindFirstChildOfClass("Tool"):FindFirstChild("GunScript_Local") then
+          local humanoid = sel.Character:FindFirstChildOfClass("Humanoid")
+          if humanoid and humanoid.Health > 0 and not sel.Character:FindFirstChildOfClass("ForceField") then
+            if not DistanceCheck(sel, 300) then
+              local old = LocalPlayer.Character.HumanoidRootPart.CFrame
+              pcall(function() Teleport(sel.Character.HumanoidRootPart.CFrame) end)
+              if Config.TheBronx.PlayerUtilities.AutoKill then pcall(function() kill_gun(sel.Name, "Head", math.huge) end) end
+              if Config.TheBronx.PlayerUtilities.AutoRagdoll then pcall(function() kill_gun(sel.Name, "RightUpperLeg", 0.01) end) end
+              task.wait(0.5)
+              pcall(function() Teleport(old) end)
+            else
+              if Config.TheBronx.PlayerUtilities.AutoKill then pcall(function() kill_gun(sel.Name, "Head", math.huge) end) end
+              if Config.TheBronx.PlayerUtilities.AutoRagdoll then pcall(function() kill_gun(sel.Name, "RightUpperLeg", 0.01) end) end
+            end
+          end
+        end
+      end
+    end
+  end)
+
+  -------------------------
+  -- Dropped collection thread
+  -------------------------
+  task.spawn(function()
+    while task.wait(2) do
+      pcall(CollectDroppedMoneyTask)
+      pcall(CollectLootBagsTask)
+    end
+  end)
+
+  -------------------------
+  -- Click-to-teleport (mouse-based, reliable)
+  -------------------------
+  do
+    local mouse = LocalPlayer:GetMouse()
+    mouse.Button1Down:Connect(function()
+      if not (Config.TheBronx.ClickTeleport and Config.TheBronx.ClickTeleportActive) then return end
+      pcall(function()
+        local hit = mouse.Hit -- CFrame
+        if hit and (typeof(hit) == "CFrame" or hit.Position) then
+          local pos = (typeof(hit) == "CFrame") and hit.Position or hit.Position
+          Teleport(CFrame.new(pos + Vector3.new(0,3,0)))
+        end
+      end)
+    end)
+  end
+
+  -------------------------
+  -- Vehicle mod & instant stop
+  -------------------------
+  task.spawn(function()
+    while true do
+      if Config.TheBronx.VehicleModifications.SpeedEnabled and UserInputService:IsKeyDown(Enum.KeyCode.W) then
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+          local Humanoid = LocalPlayer.Character:FindFirstChildWhichIsA("Humanoid")
+          if Humanoid then
+            local SeatPart = Humanoid.SeatPart
+            if SeatPart and SeatPart:IsA("VehicleSeat") then
+              pcall(function() SeatPart.AssemblyLinearVelocity = SeatPart.AssemblyLinearVelocity * Vector3.new(1 + Config.TheBronx.VehicleModifications.SpeedValue, 1, 1 + Config.TheBronx.VehicleModifications.SpeedValue) end)
+            end
+          end
+        end
+      end
+
+      if Config.TheBronx.VehicleModifications.BreakEnabled and UserInputService:IsKeyDown(Enum.KeyCode.S) then
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+          local Humanoid = LocalPlayer.Character:FindFirstChildWhichIsA("Humanoid")
+          if Humanoid then
+            local SeatPart = Humanoid.SeatPart
+            if SeatPart and SeatPart:IsA("VehicleSeat") then
+              pcall(function() SeatPart.AssemblyLinearVelocity = SeatPart.AssemblyLinearVelocity * Vector3.new(1 - Config.TheBronx.VehicleModifications.BreakValue, 1, 1 - Config.TheBronx.VehicleModifications.BreakValue) end)
+            end
+          end
+        end
+      end
+
+      task.wait(0.05)
+    end
+  end)
+
+  UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Config.TheBronx.VehicleModifications.InstantStopBind and Config.TheBronx.VehicleModifications.InstantStop then
+      if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        local Humanoid = LocalPlayer.Character:FindFirstChildWhichIsA("Humanoid")
+        if Humanoid then
+          local SeatPart = Humanoid.SeatPart
+          if SeatPart and SeatPart:IsA("VehicleSeat") then
+            pcall(function() SeatPart.AssemblyLinearVelocity = Vector3.new(0,0,0); SeatPart.AssemblyAngularVelocity = Vector3.new(0,0,0) end)
+          end
+        end
+      end
+    end
+  end)
+
+  -------------------------
+  -- ProximityPrompt handling (instant interact, bypass cars)
+  -------------------------
+  ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt, player)
+    if not prompt or player ~= LocalPlayer then return end
+    if Config.TheBronx.PlayerModifications.InstantInteract then pcall(function() universalFireProximityPrompt(prompt, true) end) end
+    if Config.TheBronx.PlayerModifications.BypassLockedCars then
+      local check = prompt
+      repeat
+        if check:FindFirstChild("DriveSeat") then
+          pcall(function() check:FindFirstChild("DriveSeat"):Sit(LocalPlayer.Character.Humanoid) end)
+          break
+        end
+        check = check.Parent
+      until not check
+    end
+  end)
+
+  -------------------------
+  -- PreRender: InstantRevive
+  -------------------------
+  RunService.PreRender:Connect(function()
+    if Config.TheBronx.PlayerModifications.InstantRevive and LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+      local hum = LocalPlayer.Character.Humanoid
+      if hum and hum:GetState() == Enum.HumanoidStateType.Physics then
+        pcall(function() if ReplicatedStorage:FindFirstChild("FSpamRemote") then ReplicatedStorage.FSpamRemote:FireServer() end end)
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+      end
+      pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, true) end)
+    end
+  end)
+
+  -------------------------
+  -- Respawn where you died
+  -------------------------
+  do
+    local deathFrame = nil
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+      LocalPlayer.Character.Humanoid.Died:Connect(function()
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+          deathFrame = LocalPlayer.Character.HumanoidRootPart.CFrame
+        end
+      end)
+    end
+
+    LocalPlayer.CharacterAdded:Connect(function(char)
+      char:WaitForChild("Humanoid"); char:WaitForChild("HumanoidRootPart")
+      char:FindFirstChild("Humanoid").Died:Connect(function() if char:FindFirstChild("HumanoidRootPart") then deathFrame = char.HumanoidRootPart.CFrame end end)
+      char.DescendantAdded:Connect(function(desc)
+        if (desc:IsA("BodyVelocity") or desc:IsA("LinearVelocity") or desc:IsA("VectorForce")) and Config.TheBronx.PlayerModifications.NoKnockback then
+          task.wait(); pcall(function() desc:Destroy() end)
+        end
+      end)
+      if Config.TheBronx.PlayerModifications.RespawnWhereYouDied and typeof(deathFrame) == "CFrame" then pcall(function() char:WaitForChild("HumanoidRootPart").CFrame = deathFrame end) end
+      if Config.MiscSettings.Fly.Enabled then task.wait(); -- start flight if enabled
+        -- flight will start automatically in StartFlight when toggled
+      end
+    end)
+  end
+
+  -------------------------
+  -- Infinite Jump (universal & reliable)
+  -- Use JumpRequest which is a Roblox event fired when user attempts to jump.
+  -------------------------
+  UserInputService.JumpRequest:Connect(function()
+    if Config.MiscSettings.ModifyJump.Infinity and LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+      pcall(function() LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end)
+    end
+  end)
+
+  -- extra fallback: InputBegan & Heartbeat checks
+  UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if Config.MiscSettings.ModifyJump.Infinity and input.KeyCode == Enum.KeyCode.Space then
+      pcall(function() if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end end)
+    end
+  end)
+  RunService.Heartbeat:Connect(function()
+    if Config.MiscSettings.ModifyJump.Infinity and UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+      pcall(function() if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end end)
+    end
+  end)
+
+  -------------------------
+  -- Silent Aim hook (best-effort)
+  -------------------------
+  do
+    local success, bv = pcall(function() return LocalPlayer.PlayerScripts and LocalPlayer.PlayerScripts:FindFirstChild("BulletVisualizerClientScript") end)
+    if success and bv and bv.Visualize then
+      pcall(function()
+        bv.Visualize.Event:Connect(function(...)
+          local args = {...}
+          local damage = args[10] and args[10][1]
+          local playerRef = args[1] and args[1].Parent
+          if type(damage) == "number" and Config.Silent.Enabled and Config.Silent.Targetting and playerRef == LocalPlayer.Character then
+            if not (math.random(0,100) <= Config.Silent.HitChance) then return end
+            local RandomPart = Config.Silent.TargetPart[1] and Config.Silent.TargetPart[math.random(1, #Config.Silent.TargetPart)] or "Head"
+            if _getgenv().SilentTarget and _getgenv().SilentTarget.Character and _getgenv().SilentTarget.Character:FindFirstChild(RandomPart) then
+              if not Config.Silent.WallBang then
+                local ok2, hit = pcall(function()
+                  return Workspace:FindPartOnRayWithIgnoreList(Ray.new(LocalPlayer.Character[RandomPart].Position, ( _getgenv().SilentTarget.Character[RandomPart].Position - LocalPlayer.Character[RandomPart].Position ).Unit * ( _getgenv().SilentTarget.Character[RandomPart].Position - LocalPlayer.Character[RandomPart].Position ).Magnitude), { _getgenv().SilentTarget.Character, LocalPlayer.Character })
+                end)
+                if ok2 and hit then return end
+              end
+              pcall(function() kill_gun(tostring(_getgenv().SilentTarget), RandomPart, damage) end)
+            end
+          end
+        end)
+      end)
+    end
+  end
+
+  -------------------------
+  -- Lightweight ESP (ScreenGui)
+  -------------------------
+  local ESPHolder = Instance.new("ScreenGui")
+  ESPHolder.Name = "AltRealityESP"
+  ESPHolder.ResetOnSpawn = false
+  pcall(function() ESPHolder.Parent = CoreGui end)
+
+  local function ensureESPFrame(plr)
+    if not plr or plr == LocalPlayer then return nil end
+    if ESPHolder:FindFirstChild(plr.Name) then return ESPHolder[plr.Name] end
+    local frame = Instance.new("Frame"); frame.Name = plr.Name; frame.Size = UDim2.new(0,150,0,30); frame.BackgroundTransparency = 1; frame.Parent = ESPHolder
+    local name = Instance.new("TextLabel"); name.Parent = frame; name.Size = UDim2.new(1,0,0,15); name.Position = UDim2.new(0,0,0,0); name.BackgroundTransparency = 1; name.TextSize = Config.ESP.FontSize; name.Font = Config.ESP.Font; name.Text = plr.Name
+    local distance = Instance.new("TextLabel"); distance.Parent = frame; distance.Size = UDim2.new(1,0,0,15); distance.Position = UDim2.new(0,0,0,15); distance.BackgroundTransparency = 1; distance.TextSize = Config.ESP.FontSize; distance.Font = Config.ESP.Font; distance.Text = ""
+    return frame
+  end
+
+  Players.PlayerAdded:Connect(function(plr) if Config.ESP.Enabled then ensureESPFrame(plr) end end)
+  for _,plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer and Config.ESP.Enabled then ensureESPFrame(plr) end end
+
+  RunService.Heartbeat:Connect(function()
+    if not Config.ESP.Enabled then
+      for _, child in ipairs(ESPHolder:GetChildren()) do if child:IsA("Frame") then child.Visible = false end end
+      return
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+      if plr == LocalPlayer then continue end
+      local frame = ESPHolder:FindFirstChild(plr.Name)
+      if not frame then frame = ensureESPFrame(plr) end
+      if not (plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")) then if frame then frame.Visible = false end; continue end
+      local root = plr.Character.HumanoidRootPart
+      local screenPos, onScreen = Camera:WorldToViewportPoint(root.Position)
+      local visible = onScreen and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and (LocalPlayer.Character.HumanoidRootPart.Position - root.Position).Magnitude <= Config.ESP.MaxDistance
+      if frame then frame.Visible = visible end
+      if visible then
+        frame.Position = UDim2.new(0, screenPos.X - 75, 0, screenPos.Y - 15)
+        local textlabel = frame:FindFirstChildOfClass("TextLabel")
+        if textlabel and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+          textlabel.Text = string.format("%s (%.1fm)", plr.Name, (LocalPlayer.Character.HumanoidRootPart.Position - root.Position).Magnitude)
+        end
+      end
+    end
+  end)
+
+  -------------------------
+  -- Gun list refresher
+  -------------------------
+  task.spawn(function()
+    while task.wait(2) do
+      if Workspace:FindFirstChild("GUNS") then
+        for _,v in ipairs(Workspace.GUNS:GetChildren()) do
+          if v:IsA("Model") then
+            local PriceObj = safeFind(v, "Price")
+            local Price = (PriceObj and PriceObj.Value) or 0
+            if Price >= 10 and Price <= 100000 then
+              local entry = v.Name.." - $"..tostring(Price)
+              if not table.find(Config.Guns, entry) then table.insert(Config.Guns, entry) end
+            end
+          end
+        end
+        table.sort(Config.Guns)
+      end
+    end
+  end)
+
+  -------------------------
+  -- Placeholder: Wash/Dry Money (user asked to keep)
+  -------------------------
+  function WashMoney()
+    -- Placeholder: implement washing logic specific to server if desired.
+    -- Example: find laundromat prompts and call universalFireProximityPrompt
+  end
+
+  function DryMoney()
+    -- Placeholder: implement drying logic specific to server if desired.
+    -- Example: find drying machine prompts and call universalFireProximityPrompt
+  end
+
+  -------------------------
+  -- Clean unload handler
+  -------------------------
+  Library.Unload = function()
+    pcall(function() ESPHolder:Destroy() end)
+    -- destroy other created instances if any and stop loops gracefully (best-effort)
+    pcall(function() Library:Unload() end)
+  end
+
+  -------------------------
+  -- Final ready message
+  -------------------------
+  print("[AltReality] Bronx universal script loaded. Compatible with modern executors.")
+  print("[AltReality] If a feature still doesn't work: tell me your executor and any console errors.")
+end)
